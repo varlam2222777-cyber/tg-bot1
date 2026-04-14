@@ -5,7 +5,10 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Загружаем .env только если файл реально существует (локальная разработка).
+# На Railway переменные задаются через Variables и уже есть в os.environ.
+if os.path.exists(".env"):
+    load_dotenv(override=False)
 
 
 def _env_bool(key: str, default: bool = True) -> bool:
