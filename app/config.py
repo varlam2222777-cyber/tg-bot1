@@ -62,6 +62,15 @@ class Settings:
     example_video_3_file_id: str | None
 
 
+def _fix_db_url(url: str) -> str:
+    """Railway даёт postgres://... — SQLAlchemy asyncpg требует postgresql+asyncpg://"""
+    if url.startswith("postgres://"):
+        url = "postgresql+asyncpg://" + url[len("postgres://"):]
+    elif url.startswith("postgresql://"):
+        url = "postgresql+asyncpg://" + url[len("postgresql://"):]
+    return url
+
+
 def _load_category_trends(prefix: str, base_index: int) -> list[CategoryTrend]:
     """Читает CHILD_TREND_N_* или ADULT_TREND_N_* пока есть NAME."""
     trends: list[CategoryTrend] = []
@@ -104,7 +113,7 @@ def load_settings() -> Settings:
         support_username=os.getenv("SUPPORT_USERNAME", "support").strip().lstrip("@"),
         bot_username=os.getenv("BOT_USERNAME", "").strip().lstrip("@"),
         promo_video_file_id=os.getenv("PROMO_VIDEO_FILE_ID") or None,
-        database_url=os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./bot.db").strip(),
+        database_url=_fix_db_url(os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./bot.db").strip()),
         kie_ssl_verify=_env_bool("KIE_SSL_VERIFY", True),
         example_video_1_file_id=os.getenv("EXAMPLE_VIDEO_1_FILE_ID") or None,
         example_video_2_file_id=os.getenv("EXAMPLE_VIDEO_2_FILE_ID") or None,
