@@ -426,3 +426,41 @@ def spawn_generation(
 ) -> None:
     t = asyncio.create_task(run_single_generation(bot, settings, session_factory, generation_id))
     t.add_done_callback(_log_generation_task)
+
+
+async def resume_pending_generations(
+    bot: Bot,
+    settings: Settings,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """При старте бота подхватывает незавершённые генерации из БД."""
+    async with session_factory() as session:
+        r = await session.execute(
+            select(Generation)
+            .where(Generation.status.in_(["pending", "processing"]))
+        )
+        stuck = r.scalars().all()
+
+    if not stuck:
+        logger.info("resume: нет незавершённых генераций")
+        return
+
+    logger.info("resume: найдено %d незавершённых генераций, перезапускаем", len(stuck))
+    for gen in stuck:
+        # Сбрасываем processing → pending чтобы worker начал сначала
+        async with session_factory() as session:
+            g = await session.get(Generation, gen.id)
+            if g and g.status == "processing":
+                g.status = "pending"
+                await session.commit()
+
+        logger.info("resume: gen_id=%s user=%s trend=%s chat=%s", gen.id, gen.user_id, gen.trend_index, gen.chat_id)
+        spawn_generation(bot, settings, session_factory, gen.id)
+
+        try:
+            await bot.send_message(
+                gen.chat_id,
+                "Бот был перезапущен — продолжаем генерацию вашего видео ⏳"
+            )
+        except Exception:
+            logger.warning("resume: не удалось уведомить chat_id=%s", gen.chat_id)

@@ -62,6 +62,9 @@ async def main() -> None:
     from app.webhook_server import start_server
     await start_server(session_factory, bot, settings)
 
+    from app.worker import resume_pending_generations
+    await resume_pending_generations(bot, settings, session_factory)
+
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
