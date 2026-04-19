@@ -213,6 +213,55 @@ async def _fail(
     )
 
 
+_MAX_TG_BYTES = 45 * 1024 * 1024  # 45 MB — лимит Telegram Bot API
+
+
+async def _compress_video(data: bytes) -> bytes:
+    """Сжимает видео через ffmpeg до битрейта 1500k. Возвращает исходные байты если ffmpeg не найден."""
+    import shutil
+    import tempfile
+
+    if not shutil.which("ffmpeg"):
+        logger.warning("ffmpeg не найден, сжатие пропущено")
+        return data
+
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as src_f:
+        src_f.write(data)
+        src_path = src_f.name
+
+    dst_path = src_path.replace(".mp4", "_out.mp4")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-i", src_path,
+            "-c:v", "libx264", "-b:v", "1500k",
+            "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart",
+            dst_path,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=300)
+        if proc.returncode == 0:
+            import os as _os
+            compressed = _os.path.getsize(dst_path)
+            logger.info("ffmpeg: %d → %d bytes", len(data), compressed)
+            with open(dst_path, "rb") as f:
+                return f.read()
+        else:
+            logger.warning("ffmpeg завершился с кодом %s, используем оригинал", proc.returncode)
+            return data
+    except Exception:
+        logger.exception("ffmpeg compress")
+        return data
+    finally:
+        import os as _os
+        for p in (src_path, dst_path):
+            try:
+                _os.unlink(p)
+            except FileNotFoundError:
+                pass
+
+
 async def _deliver_video(
     bot: Bot,
     settings: Settings,
@@ -243,24 +292,35 @@ async def _deliver_video(
         )
         return
 
-    vid = BufferedInputFile(data, filename="dance.mp4")
+    # Сжимаем если файл больше лимита Telegram
+    if len(data) > _MAX_TG_BYTES:
+        logger.info("Видео %d bytes > 45MB, запускаем ffmpeg", len(data))
+        data = await _compress_video(data)
+
     bot_mention = settings.bot_username or "бот"
 
     user_notified = False
     try:
+        vid = BufferedInputFile(data, filename="dance.mp4")
         await bot.send_video(chat_id, vid, caption="🎉 Твоё видео готово!")
-        await bot.send_document(chat_id, BufferedInputFile(data, filename="dance.mp4"))
         user_notified = True
     except Exception:
-        logger.exception("send_video/document chat_id=%s", chat_id)
+        logger.exception("send_video chat_id=%s", chat_id)
+        # Файл слишком большой даже после сжатия — отправляем как документ
         try:
-            await bot.send_message(
-                chat_id,
-                "Видео готово — не удалось отправить файлом в Telegram. Скачай по ссылке:\n" + video_url[:2000],
-            )
+            vid = BufferedInputFile(data, filename="dance.mp4")
+            await bot.send_document(chat_id, vid, caption="🎉 Твоё видео готово!")
             user_notified = True
         except Exception:
-            logger.exception("send_message fallback chat_id=%s", chat_id)
+            logger.exception("send_document chat_id=%s", chat_id)
+            try:
+                await bot.send_message(
+                    chat_id,
+                    "Видео готово — не удалось отправить файлом в Telegram. Скачай по ссылке:\n" + video_url[:2000],
+                )
+                user_notified = True
+            except Exception:
+                logger.exception("send_message fallback chat_id=%s", chat_id)
 
     if not user_notified:
         await _fail(
@@ -326,13 +386,19 @@ async def _schedule_post_upsell(
             return
 
     try:
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Доплатить 150₽ → +2 видео", callback_data="upsell_pay")],
+                [InlineKeyboardButton(text="🎬 Создать новое видео", callback_data="new_video")],
+            ]
+        )
         await bot.send_message(
             chat_id,
             "Понравилось? 😊\n\n"
             "🔥 СПЕЦ. ОФФЕР (действует 24 часа):\n"
-            "Доплати 150₽ вместо 299₽ — получи ещё 2 видео!\n\n"
-            "Экономия 149₽!\n\n"
-            "Нажми /start → «Создать видео» чтобы заказать ещё.",
+            "Доплати 150₽ — получи ещё 2 видео!\n\n"
+            "Экономия 149₽ по сравнению с обычной ценой!",
+            reply_markup=kb,
         )
     except Exception:
         logger.exception("post_upsell send chat_id=%s", chat_id)
