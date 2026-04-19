@@ -116,7 +116,6 @@ async def create_motion_task(
         "input": {
             "prompt": full_prompt,
             "negative_prompt": NEGATIVE_PROMPT,
-            "cfg_scale": 0.7,
             "input_urls": [image_url],
             "video_urls": [video_url],
             "mode": "720p",
