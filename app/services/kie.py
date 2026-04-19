@@ -82,6 +82,24 @@ async def upload_file_from_remote_url(
     return str(out)
 
 
+POSITIVE_PROMPT = (
+    "Animate only the subject(s) present in the source image. "
+    "Preserve exact identity, face, clothing, body proportions and body count from the photo. "
+    "Do not add new people, characters, animals, or objects. "
+    "Static background, fixed camera, clean composition. "
+    "Photorealistic, natural lighting, high detail, cinematic quality, smooth realistic motion, "
+    "natural physics, grounded footwork, stable limbs."
+)
+
+NEGATIVE_PROMPT = (
+    "extra people, additional subjects, new characters, background people, crowd, "
+    "duplicate subjects, cloned figures, twins, split screen, multiple versions of the same person, "
+    "hallucinated objects, added props, mirrors with reflections, "
+    "cartoon, anime, plastic skin, distorted anatomy, melted face, warped limbs, extra fingers, "
+    "floating body parts, sliding feet, jitter, low quality, blurry, watermark, text"
+)
+
+
 async def create_motion_task(
     session: aiohttp.ClientSession,
     settings: Settings,
@@ -89,12 +107,16 @@ async def create_motion_task(
     video_url: str,
     prompt: str = "",
 ) -> str:
+    full_prompt = POSITIVE_PROMPT + (f" {prompt}" if prompt.strip() else "")
+
     url = f"{settings.kie_api_base}/api/v1/jobs/createTask"
     payload: dict[str, Any] = {
         "model": settings.kie_model,
         "callBackUrl": settings.kie_callback_url,
         "input": {
-            "prompt": prompt or " ",
+            "prompt": full_prompt,
+            "negative_prompt": NEGATIVE_PROMPT,
+            "cfg_scale": 0.7,
             "input_urls": [image_url],
             "video_urls": [video_url],
             "mode": "720p",

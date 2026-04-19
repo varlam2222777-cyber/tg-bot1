@@ -21,7 +21,7 @@ class PhotoValidation:
     error_text: str | None = None
 
 
-MIN_BYTES = 10 * 1024       # 10 KB — слишком маленькие иконки
+MIN_BYTES = 1024            # 1 KB — только совсем пустые файлы
 MAX_BYTES = 50 * 1024 * 1024  # 50 MB — примем и сожмём если надо
 MIN_SIDE = 200
 MAX_SIDE = 8000

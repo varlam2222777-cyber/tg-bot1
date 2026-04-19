@@ -326,14 +326,13 @@ async def photo1(message: Message, state: FSMContext, session: Any, bot: Bot, se
         await message.answer("Пришли фото сжатым или файлом JPG / PNG / WebP 📸", reply_markup=nav_kb())
         return
     raw, fid = got
-    ok = validate_photo_bytes(raw, "x.jpg")
+    logger.info("photo1: user=%s size=%d bytes file_id=%s", message.from_user.id, len(raw), fid[:20])
+    ok = validate_photo_bytes(raw, "")
     if not ok.ok:
+        logger.warning("photo1: REJECTED user=%s reason=%s", message.from_user.id, ok.error_text)
         await message.answer(
-            "Упс! Это фото не подходит 😔\n\n"
-            "Проверь:\n"
-            "— Формат: JPG или PNG\n"
-            "— Размер: до 10MB\n"
-            "— Качество: не слишком маленькое\n\n"
+            f"Упс! Это фото не подходит 😔\n\n"
+            f"Причина: {ok.error_text}\n\n"
             "Попробуй загрузить другое фото 📸",
             reply_markup=nav_kb(),
         )
@@ -373,7 +372,7 @@ async def replace_photo_mid_flow(
         await message.answer("Пришли фото сжатым или файлом JPG / PNG / WebP 📸", reply_markup=nav_kb())
         return
     raw, fid = got
-    ok = validate_photo_bytes(raw, "x.jpg")
+    ok = validate_photo_bytes(raw, "")
     if not ok.ok:
         await message.answer("Фото не подходит. Попробуй другое 📸", reply_markup=nav_kb())
         return
@@ -450,7 +449,7 @@ async def photo2(message: Message, state: FSMContext, bot: Bot) -> None:
         await message.answer("Пришли фото сжатым или файлом JPG / PNG / WebP 📸", reply_markup=nav_kb())
         return
     raw, fid = got
-    ok = validate_photo_bytes(raw, "x.jpg")
+    ok = validate_photo_bytes(raw, "")
     if not ok.ok:
         await message.answer("Фото не подходит. Попробуй другое 📸", reply_markup=nav_kb())
         return
@@ -469,7 +468,7 @@ async def photo3(message: Message, state: FSMContext, bot: Bot, settings: Settin
         await message.answer("Пришли фото сжатым или файлом JPG / PNG / WebP 📸", reply_markup=nav_kb())
         return
     raw, fid = got
-    ok = validate_photo_bytes(raw, "x.jpg")
+    ok = validate_photo_bytes(raw, "")
     if not ok.ok:
         await message.answer("Фото не подходит. Попробуй другое 📸", reply_markup=nav_kb())
         return
@@ -520,18 +519,23 @@ async def pay_click(
         return
     data = await state.get_data()
     uid = cq.from_user.id
+    current_state = await state.get_state()
+    logger.info("pay_click: user=%s state=%s data_keys=%s callback=%s", uid, current_state, list(data.keys()), cq.data)
     pkg = int(data.get("pkg") or 1)
     photos: list[str] = list(data.get("photo_ids") or [])
     parsed = _parse_pay_callback(cq.data)
     if parsed is None:
+        logger.warning("pay_click: REJECT parse failed callback=%r user=%s", cq.data, uid)
         await cq.message.answer("Кнопка «Оплатить» устарела. Нажми «Назад» и снова «Оплатить» или начни с /start.")
         return
     amount, t_first, pay_tok = parsed
     if pay_tok != data.get("active_pay_token"):
+        logger.warning("pay_click: REJECT token mismatch user=%s cb_tok=%s fsm_tok=%s", uid, pay_tok, data.get("active_pay_token"))
         await cq.message.answer(
             "Эта кнопка оплаты больше не действует.\nПролистай вниз и нажми «Оплатить» на последнем сообщении."
         )
         return
+    logger.info("pay_click: ACCEPTED user=%s amount=%s trend=%s pkg=%s photos=%s", uid, amount, t_first, pkg, len(photos))
     await state.update_data(trend_first=t_first, active_pay_token=None)
 
     trends = [t_first] if pkg == 1 else [t_first, t_first, t_first]
@@ -579,12 +583,14 @@ async def pay_click(
         return
 
     if not yookassa_configured(settings):
+        logger.warning("pay_click: YooKassa NOT configured, shop_id=%r", settings.yookassa_shop_id)
         await cq.message.answer(
             "Оплата картой недоступна: не заданы YOOKASSA_SHOP_ID / YOOKASSA_SECRET_KEY в .env.\n\n"
             "Для теста: /addbalance <user_id> <количество>"
         )
         return
 
+    logger.info("pay_click: creating YooKassa payment user=%s amount=%s", uid, amount)
     order = await create_order(session, uid, pkg, photos, trends, trend_urls=trend_urls)
     await session.flush()
 
@@ -728,3 +734,132 @@ async def new_video(cq: CallbackQuery, state: FSMContext, session: Any, settings
     await state.clear()
     if cq.message:
         await send_main_menu(cq.message, settings, session, state, cq.from_user.id)
+
+
+@router.callback_query(F.data == "upsell_pay")
+async def upsell_pay(
+    cq: CallbackQuery,
+    state: FSMContext,
+    session: Any,
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    bot: Bot,
+) -> None:
+    """Создаёт платёж на 150₽, после оплаты добавляет 2 генерации."""
+    await _safe_callback_answer(cq)
+    if not cq.message:
+        return
+    uid = cq.from_user.id
+
+    if not yookassa_configured(settings):
+        await cq.message.answer("Оплата временно недоступна. Напиши в поддержку: @" + settings.support_username)
+        return
+
+    try:
+        url, pay_id = await yk.create_payment_url(
+            settings,
+            amount_rub=150,
+            description="Доп. 2 видео",
+            metadata={"user_id": str(uid), "upsell": "1"},
+        )
+    except Exception:
+        logger.exception("upsell_pay create_payment")
+        await cq.message.answer("Не удалось создать платёж. Попробуй позже.")
+        return
+
+    from app.db.repo import create_payment_row
+    await create_payment_row(session, uid, 150, None, pay_id, "pending")
+    await session.commit()
+
+    # Сохраняем pay_id в FSM чтобы проверить оплату
+    await state.update_data(upsell_pay_id=pay_id)
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Перейти к оплате", url=url)],
+            [InlineKeyboardButton(text="🔄 Я оплатил — проверить", callback_data="upsell_check")],
+        ]
+    )
+    await cq.message.answer(
+        "Счёт на 150₽ создан. Оплати по кнопке, затем нажми «Я оплатил — проверить» 👇",
+        reply_markup=kb,
+    )
+
+
+@router.callback_query(F.data == "upsell_check")
+async def upsell_check(
+    cq: CallbackQuery,
+    state: FSMContext,
+    session: Any,
+    settings: Settings,
+) -> None:
+    await _safe_callback_answer(cq)
+    if not cq.message:
+        return
+    data = await state.get_data()
+    pay_id = data.get("upsell_pay_id")
+    if not pay_id:
+        await cq.message.answer("Платёж не найден. Нажми «Доплатить 150₽» снова.")
+        return
+
+    st = await yk.get_payment_status(settings, pay_id)
+    if st is None:
+        await cq.message.answer("Не удалось проверить оплату. Попробуй через минуту.")
+        return
+    if st != "succeeded":
+        await cq.message.answer(
+            "Оплата ещё не прошла 😔\n\nПопробуй ещё раз или используй другую карту.",
+            reply_markup=pay_error_kb(),
+        )
+        return
+
+    from sqlalchemy import select as _select
+    from app.db.models import Payment as PaymentModel
+    rp = await session.execute(_select(PaymentModel).where(PaymentModel.yookassa_payment_id == pay_id))
+    pay_row = rp.scalar_one_or_none()
+    if pay_row and pay_row.status == "succeeded":
+        await cq.message.answer("Этот платёж уже учтён ✅")
+        return
+
+    if pay_row:
+        pay_row.status = "succeeded"
+
+    from sqlalchemy import select as _sel
+    r = await session.execute(_sel(User).where(User.user_id == cq.from_user.id))
+    u = r.scalar_one_or_none()
+    if u:
+        u.balance += 2
+
+    await session.commit()
+    await state.update_data(upsell_pay_id=None)
+    await cq.message.answer(
+        "Оплата прошла ✅ На твой баланс добавлено +2 генерации!\n\nНажми «Создать видео» 🎬"
+    )
+
+
+# ─── fallback для потерянных состояний ──────────────────────────────────────────
+# Эти хендлеры НЕ имеют StateFilter — ловят нажатия когда FSM-состояние потеряно
+# (после редеплоя Railway, перезапуска бота, таймаута MemoryStorage)
+
+@router.callback_query(F.data.startswith("pay:"))
+async def pay_fallback(cq: CallbackQuery) -> None:
+    """Пользователь нажал «Оплатить» но состояние потеряно."""
+    logger.warning("pay_fallback: state lost, user=%s callback=%s", cq.from_user.id, cq.data)
+    await _safe_callback_answer(cq)
+    if cq.message:
+        await cq.message.answer(
+            "Сессия истекла (бот был перезапущен) 😔\n\n"
+            "Нажми /start → «Создать видео» и пройди шаги заново — это быстро!"
+        )
+
+
+@router.callback_query(F.data.startswith("pkg:"))
+async def pkg_fallback(cq: CallbackQuery) -> None:
+    """Пользователь нажал «1 видео / 3 видео» но состояние потеряно."""
+    logger.warning("pkg_fallback: state lost, user=%s callback=%s", cq.from_user.id, cq.data)
+    await _safe_callback_answer(cq)
+    if cq.message:
+        await cq.message.answer(
+            "Сессия истекла (бот был перезапущен) 😔\n\n"
+            "Нажми /start → «Создать видео» и пройди шаги заново — это быстро!"
+        )

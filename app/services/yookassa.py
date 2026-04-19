@@ -27,6 +27,11 @@ async def create_payment_url(
     if not yookassa_configured(settings):
         raise RuntimeError("YooKassa не настроена")
 
+    logger.info(
+        "create_payment_url: amount=%s description=%r metadata=%s shop_id=%s return_url=%s",
+        amount_rub, description, metadata, settings.yookassa_shop_id, settings.yookassa_return_url,
+    )
+
     def _sync() -> tuple[str, str]:
         from yookassa import Payment
 
@@ -47,6 +52,7 @@ async def create_payment_url(
         )
         url = pay.confirmation.confirmation_url
         pid = pay.id
+        logger.info("create_payment_url: SUCCESS payment_id=%s url=%s", pid, url[:80])
         return url, pid
 
     return await asyncio.to_thread(_sync)

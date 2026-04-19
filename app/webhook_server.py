@@ -31,6 +31,7 @@ async def _handle_yookassa_webhook(
 
     event_type = body.get("event", "")
     obj = body.get("object", {})
+    logger.info("webhook: event=%s pay_id=%s", event_type, obj.get("id"))
 
     if event_type != "payment.succeeded":
         # Другие события игнорируем, но отвечаем 200
