@@ -74,7 +74,8 @@ def normalize_image_for_kie(data: bytes) -> tuple[bytes, str, str]:
     im.load()
     fmt = (im.format or "").upper()
 
-    logger.info("normalize: input format=%s, size=%d bytes, mode=%s", fmt, len(data), im.mode)
+    w, h = im.size
+    logger.info("normalize: input format=%s %dx%d (%.2f ratio) size=%d bytes mode=%s", fmt, w, h, w/h if h else 0, len(data), im.mode)
 
     # Любой формат кроме PNG → конвертируем в JPEG
     if fmt == "PNG":
@@ -113,5 +114,8 @@ def normalize_image_for_kie(data: bytes) -> tuple[bytes, str, str]:
             if len(result) <= AUTO_COMPRESS_THRESHOLD:
                 break
 
-    logger.info("normalize: output JPEG %d bytes", len(result))
+    # Логируем финальное разрешение
+    with Image.open(io.BytesIO(result)) as check:
+        fw, fh = check.size
+    logger.info("normalize: output JPEG %dx%d (%.2f ratio) %d bytes", fw, fh, fw/fh if fh else 0, len(result))
     return result, "photo.jpg", "image/jpeg"

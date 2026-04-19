@@ -119,10 +119,14 @@ async def create_motion_task(
             "input_urls": [image_url],
             "video_urls": [video_url],
             "mode": "720p",
-            "character_orientation": "video",
+            "character_orientation": "image",
             "background_source": "input_video",
         },
     }
+    logger.info(
+        "createTask: model=%s orientation=image image_url=%s video_url=%s prompt_len=%d",
+        settings.kie_model, image_url[:60], video_url[:60], len(full_prompt),
+    )
     headers = {
         "Authorization": f"Bearer {settings.kie_api_key}",
         "Content-Type": "application/json",
